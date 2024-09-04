@@ -33,11 +33,11 @@ client.once('ready', () => {
             searchPool();
         } else {
             updateBotTitleAndStatus();
-            // const flag = searchPool();
-            // if (flag) {
-            //     postTokenPrice();
-            // }
         }
+    })
+
+    schedule.scheduleJob('30 * * * *', () => {
+        postTokenPrice();
     })
 });
 
@@ -74,7 +74,7 @@ async function getTokenHolders() {
         console.log(`Processing results from page ${page}`);
         data.result.token_accounts.forEach((account) => {
             // if (account.amount > 9) {
-                ownerCount++;
+            ownerCount++;
             // }
         });
         page++;
@@ -158,16 +158,10 @@ async function searchPool() {
     try {
         const response = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${process.env.TOKEN_ADDRESS}`); // Replace with the actual API URL
         let pairs = response.data.pairs;
-        let flag = 0;
         for (let i = 0; i < pairs.length; i++) {
             const pool = await PoolModel.findOne({ poolId: pairs[i].pairAddress });
             if (pool) {
-                const now = new Date();
-                flag ++;
                 await PoolModel.updateOne({ poolId: pairs[i].pairAddress }, { $set: { priceNative: pairs[i].priceNative, priceUsd: pairs[i].priceUsd, liquidity: pairs[i].liquidity.usd, lastSeen: new Date() } });
-                if(flag === pairs.length) {
-                    postTokenPrice();
-                }
             } else {
                 const newPool = new PoolModel({
                     poolId: pairs[i].pairAddress,

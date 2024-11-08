@@ -1,2 +1,2 @@
-# Token-Price-Discord-Bot
+# token-price-bot
 This is token price discord bot

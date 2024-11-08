@@ -17,7 +17,7 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const channelId = process.env.PRICE_CHANNEL;
 
 // Initialize Solana connection and wallet
-const SOLANA_NETWORK = "https://api.mainnet-beta.solana.com"; // Mainnet endpoint
+const SOLANA_NETWORK = process.env.RPC; // Mainnet endpoint
 const connection = new Connection(SOLANA_NETWORK);
 
 client.once('ready', () => {
@@ -42,7 +42,7 @@ client.once('ready', () => {
 });
 
 async function getTokenHolders() {
-    const url = `https://mainnet.helius-rpc.com/?api-key=22263e79-a725-40da-b151-f4072e7517e3`;
+    const url = process.env.RPC;
     let page = 1;
     let ownerCount = 0;
 
@@ -154,6 +154,44 @@ async function getPriceChangeRate() {
     return { priceChange: changedRate, supplyChange: supplyChange };
 }
 
+async function getHourlyPriceChange() {
+    const price = await getTokenPrice();
+    let previousPrice;
+    const pool = await PoolModel.findOne({ poolId: 'hourly_price' });
+    if (pool) {
+        previousPrice = pool.priceUsd;
+        await PoolModel.updateOne({ poolId: 'hourly_price' }, { $set: { priceUsd: price, lastSeen: new Date() } });
+    } else {
+        previousPrice = price;
+        const newPool = new PoolModel({
+            poolId: 'hourly_price',
+            dexId: 'hourly',
+            priceUsd: price,
+            lastSeen: new Date(),
+        })
+        await newPool.save();
+    }
+    const changedRate = (price / previousPrice) * 100 - 100;
+    let rate;
+
+    if (changedRate < 0 && changedRate > -0.1) {
+        rate = 0.0;  // Set to 0.0 if the change is a slight decrease
+    } else {
+        rate = parseFloat(changedRate.toFixed(1));
+    }
+    
+    let mark;
+    if (rate > 0) {
+        mark = 'green_square';
+    } else if(rate === 0) {
+        mark = 'yellow_square';
+    } else {
+        mark = 'red_square';
+    }
+
+    return { mark: mark, rate: rate };
+}
+
 async function searchPool() {
     try {
         const response = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${process.env.TOKEN_ADDRESS}`); // Replace with the actual API URL
@@ -189,10 +227,12 @@ async function searchPool() {
                     }
                 };
 
-                await channel.send({
-                    embeds: [embed],
-                    files: [{ attachment: path.join(__dirname, 'assets', 'token-avatar.png'), name: 'token-avatar.png' }]
-                });
+                // await channel.send({
+                //     embeds: [embed],
+                //     files: [{ attachment: path.join(__dirname, 'assets', 'token-avatar.png'), name: 'token-avatar.png' }]
+                // });
+
+                await channel.send(`:ocean: **NEW LIQUIDITY POOL**\n\n<:MoonMan_upgrade_Helm:1269655486303698955> **${pairs[i].baseToken.symbol}-${pairs[i].quoteToken.symbol}**\n:identification_card: **${pairs[i].dexId}**\n:dollar: **$${pairs[i].liquidity.usd.toFixed(2).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}**\n:link: ${pairs[i].url}`);
             }
         }
     } catch (error) {
@@ -205,8 +245,9 @@ async function postTokenPrice() {
     if (!channel) return console.error("Channel not found");
 
     const price = await getTokenPrice();
+    const priceChanged = await getHourlyPriceChange();
     const supply = await getTokenSupply();
-    console.log('price ===> ', price, 'supply ===> ', supply, 'market cap ===> ', price * supply);
+    console.log('price ===> ', price, 'supply ===> ', supply, 'market cap ===> ', price * supply, 'mark ===> ', priceChanged.mark, 'rate ===> ', priceChanged.rate);
 
     if (!price) return;
 
@@ -224,7 +265,7 @@ async function postTokenPrice() {
     //     files: [{ attachment: path.join(__dirname, 'assets', 'token-avatar.png'), name: 'token-avatar.png' }]
     // });
 
-    await channel.send(`$TOKE = $${price.toFixed(7)}`);
+    await channel.send(`<:MoonMan_upgrade_Helm:1269655486303698955> **$${price.toFixed(7)}** - :${priceChanged.mark}: **${priceChanged.rate < 0 ? '' : '+'}${priceChanged.rate}%**`);
 }
 
 async function postNewDayMessage() {
@@ -241,48 +282,78 @@ async function postNewDayMessage() {
 
     if (!price) return;
 
-    const embed = {
-        color: 0x00ff99,
-        title: '**$TOKE - Mycelium McToken**',
-        description: `$TOKE is DePIN's very own memecoin and liquidity token with 100% of supply airdropped and a community-run DAO.\n
-                        **Price:**
-                        1 - **$${price.toFixed(5)}** - ${roleMention("1219295859049500704")} - [# :hamburger: | mctoken](https://discord.com/channels/1217921180195880970/1217972542569189436/)
-                        1m - **$${(price * 1000000).toFixed(0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}** - ${roleMention("1219295965710909572")} - [# :moneybag: | mcmillionaire](https://discord.com/channels/1217921180195880970/1217972663809605642/)
-                        5m - **$${(price * 5000000).toFixed(0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}** - ${roleMention("1219296054042820630")} - [# :whale: | mcwhale](https://discord.com/channels/1217921180195880970/1217949779493916883/)\n
-                        **Info:**
-                        Mkt Cap - **$${mcap.toFixed(0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}**
-                        Supply - **${supply.toFixed(3).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")} (${change.supplyChange.toFixed(3)}%:fire:)**
-                        Holders - **${holders.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}**`,
-        thumbnail: {
-            url: `attachment://token-avatar.png`
-        }
-    };
+    // const embed = {
+    //     color: 0x00ff99,
+    //     title: '**$TOKE - Mycelium McToken**',
+    //     description: `$TOKE is DePIN's very own memecoin and liquidity token with 100% of supply airdropped and a community-run DAO.\n
+    //                     **Price:**
+    //                     1 - **$${price.toFixed(5)}** - ${roleMention("1219295859049500704")} - [# :hamburger: | mctoken](https://discord.com/channels/1217921180195880970/1217972542569189436/)
+    //                     1m - **$${(price * 1000000).toFixed(0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}** - ${roleMention("1219295965710909572")} - [# :moneybag: | mcmillionaire](https://discord.com/channels/1217921180195880970/1217972663809605642/)
+    //                     5m - **$${(price * 5000000).toFixed(0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}** - ${roleMention("1219296054042820630")} - [# :whale: | mcwhale](https://discord.com/channels/1217921180195880970/1217949779493916883/)\n
+    //                     **Info:**
+    //                     Mkt Cap - **$${mcap.toFixed(0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}**
+    //                     Supply - **${supply.toFixed(3).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")} (${change.supplyChange.toFixed(3)}%:fire:)**
+    //                     Holders - **${holders.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}**`,
+    //     thumbnail: {
+    //         url: `attachment://token-avatar.png`
+    //     }
+    // };
 
-    await channel.send({
-        embeds: [embed],
-        files: [{ attachment: path.join(__dirname, 'assets', 'token-avatar.png'), name: 'token-avatar.png' }]
-    });
+    // await channel.send({
+    //     embeds: [embed],
+    //     files: [{ attachment: path.join(__dirname, 'assets', 'token-avatar.png'), name: 'token-avatar.png' }]
+    // });
+
+    await channel.send(`<:MoonMan_upgrade_Helm:1269655486303698955> **DAILY PRICE SUMMARY** ${roleMention("1288185907375243325")}\n\n:hamburger: **$${price.toFixed(5)}** - 1 $TOKE\n:moneybag: **$${(price * 1000000).toFixed(2).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}** - 1m $TOKE\n:whale: **$${(price * 5000000).toFixed(2).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}** - 5m $TOKE\n\n:chart_with_upwards_trend: **$${mcap.toFixed(0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}** - Market Cap\n:coin: **${supply.toFixed(3).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}** - Max Supply\n:fire: **${change.supplyChange.toFixed(3)}%** - Burned\n:man_astronaut: **${holders.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}** - Holders`);
 }
 
 async function postBigPriceChanged() {
     let rate = (await getPriceChangeRate()).priceChange;
-    if ((rate > 10)) {
+    if ((rate > 10) || (rate < -10)) {
+        let sig = '+';
+        if (rate < -10) {
+            sig = '-';
+        } 
         const channel = client.channels.cache.get(channelId);
         if (!channel) return console.error("Channel not found");
-        const embed = {
-            color: 0xff9900,
-            title: '**$TOKE - Price Volatility Detected**',
-            description: `TOKE ${rate.toFixed(2).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}%`,
-            thumbnail: {
-                url: `attachment://token-avatar.png`
-            }
-        };
+        // const embed = {
+        //     color: 0xff9900,
+        //     title: '**$TOKE - Price Volatility Detected**',
+        //     description: `TOKE ${rate.toFixed(2).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}%`,
+        //     thumbnail: {
+        //         url: `attachment://token-avatar.png`
+        //     }
+        // };
 
-        await channel.send({
-            embeds: [embed],
-            files: [{ attachment: path.join(__dirname, 'assets', 'token-avatar.png'), name: 'token-avatar.png' }]
-        });
+        await channel.send(`:zap: **PRICE VOLATILITY**\n<:MoonMan_upgrade_Helm:1269655486303698955> **${sig}${rate.toFixed(2).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}%**`);
     }
+}
+
+function truncateToFourDecimals(num) {
+    if (Math.sign(num) === -1) {
+        // If the number is negative, work with the absolute value and then reapply the sign
+        return -truncateToFourDecimals(-num);
+    }
+
+    // Convert number to string
+    const numStr = num.toString();
+
+    // Check if the number has a decimal part
+    const parts = numStr.split('.');
+    if (parts.length === 1) {
+        // No decimal part, return as is
+        return numStr;
+    }
+
+    // Get the integral and fraction parts
+    const integralPart = parts[0];
+    const fractionPart = parts[1];
+
+    // Truncate the fraction part to four digits
+    const truncatedFraction = fractionPart.slice(0, 4);
+
+    // Combine the integral part with the truncated fractional part
+    return parseFloat(`${integralPart}.${truncatedFraction}`);
 }
 
 async function startBot() {
